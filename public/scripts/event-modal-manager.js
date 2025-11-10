@@ -106,24 +106,31 @@ async function confirmDeleteEvent(eventId, eventName) {
                 method: 'DELETE'
             });
 
-            if (result.success) {
-                // 關閉所有可能開啟的相關 Modal
-                closeModal('event-log-modal');
-                closeModal('event-log-report-modal');
-                // 成功訊息和頁面刷新將由 authedFetch (utils.js) 處理
-            } else {
-                throw new Error(result.error || '刪除失敗');
-            }
+            // 【*** 程式碼修改點：移除 modal 關閉邏輯 ***】
+            // if (result.success) {
+            //     // 關閉所有可能開啟的相關 Modal
+            //     closeModal('event-log-modal');
+            //     closeModal('event-log-report-modal');
+            //     // 成功訊息和頁面刷新將由 authedFetch (utils.js) 處理
+            // } else {
+            //     throw new Error(result.error || '刪除失敗');
+            // }
+            // 【*** 修改結束 ***】
 
         } catch (error) {
             // authedFetch 已經顯示了錯誤通知
             if (error.message !== 'Unauthorized') {
                 console.error('刪除事件失敗:', error);
             }
-            // 確保 loading 隱藏 (如果 authedFetch 拋錯且沒有刷新頁面)
+        } finally {
+            // 【*** 程式碼修改點：在 finally 中統一處理 ***】
+            // 無論成功或失敗，都必須隱藏 loading 畫面並關閉 Modal。
+            // authedFetch 成功時會觸發 *view refresh* (非 full reload)，
+            // 所以 loading 畫面會一直留著，直到這裡將它關閉。
             hideLoading();
+            closeModal('event-log-modal');
+            closeModal('event-log-report-modal');
         }
-        // 這裡不需要 finally hideLoading()，因為 authedFetch 成功時會刷新頁面
     });
 }
 

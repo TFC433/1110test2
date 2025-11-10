@@ -49,11 +49,15 @@ class ContactReader extends BaseReader {
 
         const allData = await this._fetchAndCache(cacheKey, range, rowParser, sorter);
         
-        const filteredData = allData.filter(contact => 
-            (contact.name || contact.company)
-        );
-        
-        return filteredData.slice(0, limit);
+        // --- 【*** 關鍵修正 ***】 ---
+        // 移除此處的 filter
+        // const filteredData = allData.filter(contact => 
+        //     (contact.name || contact.company)
+        // );
+        // 直接回傳原始的 (已排序) 完整資料，並套用 slice
+        // 這確保了 getLinkedContacts 在 join 時可以存取所有 row，即使它們沒有 name 或 company
+        return allData.slice(0, limit);
+        // --- 【*** 修正結束 ***】 ---
     }
 
     /**
@@ -124,7 +128,7 @@ class ContactReader extends BaseReader {
         const [allContacts, allCompanies, allPotentialContacts] = await Promise.all([
             this.getContactList(),
             this.getCompanyList(), // 依賴 CompanyReader
-            this.getContacts(9999)    // 獲取原始名片資料以查找 driveLink
+            this.getContacts(9999)    // 獲取原始名片資料(現在是未過濾的)
         ]);
 
         const companyNameMap = new Map(allCompanies.map(c => [c.companyId, c.companyName]));
@@ -138,6 +142,9 @@ class ContactReader extends BaseReader {
                 // 如果聯絡人來源是名片 (BC-xxx)
                 if (contact.sourceId && contact.sourceId.startsWith('BC-')) {
                     const rowIndex = parseInt(contact.sourceId.replace('BC-', ''), 10);
+                    // 【*** 關鍵修正 ***】
+                    // 即使 `potentialContact` 沒有 name 或 company，
+                    // `potentialContactsMap` 現在也包含它了
                     const potentialContact = potentialContactsMap.get(rowIndex);
                     if (potentialContact) {
                         driveLink = potentialContact.driveLink; // 找到對應的名片連結
@@ -169,7 +176,15 @@ class ContactReader extends BaseReader {
      * @returns {Promise<object>}
      */
     async searchContacts(query) {
-        let contacts = await this.getContacts();
+        let contacts = await this.getContacts(); // 獲取未過濾的資料
+        
+        // --- 【*** 關鍵修正 ***】 ---
+        // 將過濾邏輯移到這裡
+        contacts = contacts.filter(contact => 
+            (contact.name || contact.company)
+        );
+        // --- 【*** 修正結束 ***】 ---
+
         if (query) {
             const searchTerm = query.toLowerCase();
             contacts = contacts.filter(c =>

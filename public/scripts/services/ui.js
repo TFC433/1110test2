@@ -5,6 +5,12 @@ let zIndexCounter = 1100; // Start z-index for modals above typical elements
 // Global variable to store the callback for the confirm dialog
 window.confirmActionCallback = null;
 
+// --- 【*** 修正開始 ***】 ---
+// 新增一個全域變數來追蹤當前正在預覽的連結
+let currentPreviewDriveLink = null;
+// --- 【*** 修正結束 ***】 ---
+
+
 function showModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
@@ -387,6 +393,11 @@ function renderSingleInteractionItem(item) {
  * @param {string} driveLink - Google Drive 的連結
  */
 async function showBusinessCardPreview(driveLink) {
+    // --- 【*** 修正開始 ***】 ---
+    // 1. 設定當前應該顯示的連結
+    currentPreviewDriveLink = driveLink;
+    // --- 【*** 修正結束 ***】 ---
+
     const modal = document.getElementById('business-card-preview-modal');
     const contentArea = document.getElementById('business-card-preview-content');
     if (!modal || !contentArea) {
@@ -420,6 +431,13 @@ async function showBusinessCardPreview(driveLink) {
 
             // 最終的失敗處理 (如果連 s220 都失敗)
             const handleFinalError = () => {
+                // --- 【*** 修正開始 ***】 ---
+                // 在顯示錯誤前，檢查這個請求是否仍然是當前要顯示的
+                if (currentPreviewDriveLink !== driveLink) {
+                    console.warn('[UI] Stale thumbnail error (s220) ignored.');
+                    return; // 忽略這個過期的錯誤
+                }
+                // --- 【*** 修正結束 ***】 ---
                 console.error('[UI] All thumbnail resolutions failed to load (s1600, s800, s220).');
                 const safeOriginalLink = driveLink.replace(/"/g, '&quot;');
                 contentArea.innerHTML = `<div class="alert alert-error">無法載入名片預覽 (所有解析度均失敗)。<br><a href="${safeOriginalLink}" target="_blank" class="text-link" style="margin-top: 10px; display: inline-block;" onclick="closeBusinessCardPreview()">點此在新分頁開啟</a></div>`;
@@ -427,6 +445,12 @@ async function showBusinessCardPreview(driveLink) {
 
             // 嘗試 s220 (原始)
             const handleMediumError = () => {
+                // --- 【*** 修正開始 ***】 ---
+                if (currentPreviewDriveLink !== driveLink) {
+                    console.warn('[UI] Stale thumbnail error (s800) ignored.');
+                    return; // 忽略這個過期的錯誤
+                }
+                // --- 【*** 修正結束 ***】 ---
                 console.warn(`[UI] Medium-res thumbnail (s800) failed. Falling back to original (s220)...`);
                 img.onerror = handleFinalError; // 這是最後一次嘗試
                 img.src = originalUrl;
@@ -434,6 +458,12 @@ async function showBusinessCardPreview(driveLink) {
 
             // 嘗試 s800
             const handleHighResError = () => {
+                // --- 【*** 修正開始 ***】 ---
+                if (currentPreviewDriveLink !== driveLink) {
+                    console.warn('[UI] Stale thumbnail error (s1600) ignored.');
+                    return; // 忽略這個過期的錯誤
+                }
+                // --- 【*** 修正結束 ***】 ---
                 console.warn(`[UI] High-res thumbnail (s1600) failed. Falling back to medium-res (s800)...`);
                 img.onerror = handleMediumError; // 設置下一階段的錯誤處理
                 img.src = mediumResUrl;
@@ -441,9 +471,17 @@ async function showBusinessCardPreview(driveLink) {
             
             // 統一的成功處理
             img.onload = () => {
-                contentArea.innerHTML = ''; // 清除 loading
-                contentArea.appendChild(img);
-                console.log(`[UI] Business card preview loaded successfully (at size: ${img.src.match(/=s(\d+)/)?.[1] || 'original'}).`);
+                // --- 【*** 修正開始 ***】 ---
+                // 檢查這個載入成功的圖片是否仍然是使用者想看的
+                if (currentPreviewDriveLink === driveLink) {
+                    contentArea.innerHTML = ''; // 清除 loading
+                    contentArea.appendChild(img);
+                    console.log(`[UI] Business card preview loaded successfully (at size: ${img.src.match(/=s(\d+)/)?.[1] || 'original'}).`);
+                } else {
+                    // 這是一個過期的請求，其圖片已不再需要
+                    console.warn(`[UI] Stale business card preview (link: ${driveLink}) loaded but was ignored.`);
+                }
+                // --- 【*** 修正結束 ***】 ---
             };
 
             // 1. 啟動鏈式載入：首先嘗試 s1600
@@ -455,11 +493,18 @@ async function showBusinessCardPreview(driveLink) {
             throw new Error(result.error || '無法取得縮圖 URL');
         }
     } catch (error) {
-        // 3. 任何步驟失敗 (例如 authedFetch 失敗)，都退回「新分頁開啟」的備案
-        console.warn("名片預覽失敗 (Catch Block):", error.message);
-        const safeOriginalLink = driveLink.replace(/"/g, '&quot;');
-        // 增加一個 onclick 來關閉 modal，體驗更好
-        contentArea.innerHTML = `<div class="alert alert-error">無法載入名片預覽。<br><a href="${safeOriginalLink}" target="_blank" class="text-link" style="margin-top: 10px; display: inline-block;" onclick="closeBusinessCardPreview()">點此在新分頁開啟</a></div>`;
+        // --- 【*** 修正開始 ***】 ---
+        // 檢查這個 API 錯誤是否對應當前的預覽請求
+        if (currentPreviewDriveLink === driveLink) {
+            // 3. 任何步驟失敗 (例如 authedFetch 失敗)，都退回「新分頁開啟」的備案
+            console.warn("名片預覽失敗 (Catch Block):", error.message);
+            const safeOriginalLink = driveLink.replace(/"/g, '&quot;');
+            // 增加一個 onclick 來關閉 modal，體驗更好
+            contentArea.innerHTML = `<div class="alert alert-error">無法載入名片預覽。<br><a href="${safeOriginalLink}" target="_blank" class="text-link" style="margin-top: 10px; display: inline-block;" onclick="closeBusinessCardPreview()">點此在新分頁開啟</a></div>`;
+        } else {
+            console.warn(`[UI] Stale business card preview API error ignored for link: ${driveLink}`);
+        }
+        // --- 【*** 修正結束 ***】 ---
     }
 }
 
@@ -467,6 +512,11 @@ async function showBusinessCardPreview(driveLink) {
  * 關閉名片預覽 Modal 並清除 iframe 內容
  */
 function closeBusinessCardPreview() {
+    // --- 【*** 修正開始 ***】 ---
+    // 關閉 Modal 時，重設當前連結
+    currentPreviewDriveLink = null;
+    // --- 【*** 修正結束 ***】 ---
+
     const contentArea = document.getElementById('business-card-preview-content');
     const iframe = document.getElementById('business-card-iframe');
     if (iframe) {
@@ -485,3 +535,6 @@ function closeBusinessCardPreview() {
     closeModal('business-card-preview-modal');
 }
 // **新增結束：名片預覽相關函式**
+
+// --- 【*** 關鍵修正：移除多餘的 `}` ***】 ---
+// } // <-- 這個多餘的大括號已刪除
