@@ -20,6 +20,21 @@ class CompanyService {
     }
 
     /**
+     * 【新增】標準化公司名稱的輔助函式
+     * @param {string} name - 公司名稱
+     * @returns {string} - 標準化後的名稱
+     */
+    _normalizeCompanyName(name) {
+        if (!name) return '';
+        return name
+            .toLowerCase()
+            .trim()
+            .replace(/股份有限公司|有限公司|公司/g, '') // 移除常見後綴
+            .replace(/\(.*\)/g, '') // 移除括號內容
+            .trim();
+    }
+
+    /**
      * 【新增】輔助函式：建立一筆公司互動日誌
      * @private
      */
@@ -175,6 +190,33 @@ class CompanyService {
             this.eventLogReader.getEventLogs()
         ]);
 
+        // --- 【*** 這是新加入的程式碼 ***】 ---
+        // 為了計算「相關機會案件」的「最後活動時間」，我們需要在後端
+        // 組合 allOpportunities 和 allInteractions
+        console.log(`[CompanyService] 正在為 ${allOpportunities.length} 筆機會計算最後活動時間...`);
+        const latestInteractionMap = new Map();
+        allInteractions.forEach(interaction => {
+            // 只需要考慮有關聯 opportunityId 的互動
+            if (interaction.opportunityId) {
+                const id = interaction.opportunityId;
+                const existing = latestInteractionMap.get(id) || 0;
+                // 使用 interactionTime 或 createdTime 來獲取時間戳
+                const current = new Date(interaction.interactionTime || interaction.createdTime).getTime();
+                if (current > existing) {
+                    latestInteractionMap.set(id, current);
+                }
+            }
+        });
+
+        // 將計算結果附加到 allOpportunities 陣列的每個物件上
+        allOpportunities.forEach(opp => {
+            const selfUpdate = new Date(opp.lastUpdateTime || opp.createdTime).getTime();
+            const lastInteraction = latestInteractionMap.get(opp.opportunityId) || 0;
+            opp.effectiveLastActivity = Math.max(selfUpdate, lastInteraction);
+        });
+        // --- 【*** 新程式碼結束 ***】 ---
+
+
         const normalizedCompanyName = companyName.toLowerCase().trim();
 
         const company = allCompanies.find(c => c.companyName.toLowerCase().trim() === normalizedCompanyName);
@@ -194,16 +236,22 @@ class CompanyService {
         }
 
         const relatedContacts = allContacts.filter(c => c.companyId === company.companyId);
+        
+        // 現在 allOpportunities 已經包含 effectiveLastActivity，
+        // 所以 relatedOpportunities 也會自動包含
         const relatedOpportunities = allOpportunities.filter(o => o.customerCompany.toLowerCase().trim() === normalizedCompanyName);
+        
         const relatedPotentialContacts = allPotentialContacts.filter(pc => 
             pc.company && pc.company.toLowerCase().trim() === normalizedCompanyName
         );
         
         // --- 【排序修正】 ---
+        // 這裡的互動是*公司層級*的，與您要求的機會活動無關，保持不變
         const relatedInteractions = allInteractions
             .filter(i => i.companyId === company.companyId)
             .sort((a, b) => new Date(b.interactionTime || b.createdTime) - new Date(a.interactionTime || a.createdTime));
 
+        // 這裡的事件是*公司層級*的，與您要求的機會活動無關，保持不變
         const relatedEventLogs = allEventLogs
             .filter(log => log.companyId === company.companyId)
             .sort((a, b) => new Date(b.lastModifiedTime || b.createdTime) - new Date(a.lastModifiedTime || a.createdTime));
@@ -214,7 +262,7 @@ class CompanyService {
         return {
             companyInfo: company,
             contacts: relatedContacts,
-            opportunities: relatedOpportunities,
+            opportunities: relatedOpportunities, // <-- 這個陣列現在包含 `effectiveLastActivity`
             potentialContacts: relatedPotentialContacts,
             interactions: relatedInteractions,
             eventLogs: relatedEventLogs
