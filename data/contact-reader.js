@@ -12,6 +12,16 @@ class ContactReader extends BaseReader {
     }
 
     /**
+     * 【新增】內部輔助函式，用於建立標準化的 JOIN Key
+     * @param {string} str - 原始字串
+     * @returns {string} - 轉換為小寫並移除前後空白的字串
+     * @private
+     */
+    _normalizeKey(str = '') {
+        return String(str).toLowerCase().trim();
+    }
+
+    /**
      * 取得原始名片資料 (潛在客戶)
      * @param {number} [limit=2000] - 讀取上限
      * @returns {Promise<Array<object>>}
@@ -113,9 +123,16 @@ class ContactReader extends BaseReader {
      * @returns {Promise<Array<object>>}
      */
     async getLinkedContacts(opportunityId) {
-        const allLinks = await this.getAllOppContactLinks();
+        // 步驟 1: 並行獲取所有需要的資料來源
+        const [allLinks, allContacts, allCompanies, allPotentialContacts] = await Promise.all([
+            this.getAllOppContactLinks(),
+            this.getContactList(),
+            this.getCompanyList(), // 依賴 CompanyReader
+            this.getContacts(9999)    // 獲取原始名片資料(現在是未過濾的)
+        ]);
+
+        // 步驟 2: 篩選出此機會關聯的 Contact ID
         const linkedContactIds = new Set();
-        
         for (const link of allLinks) {
             if (link.opportunityId === opportunityId && link.status === 'active') {
                 linkedContactIds.add(link.contactId);
@@ -124,37 +141,50 @@ class ContactReader extends BaseReader {
         
         if (linkedContactIds.size === 0) return [];
         
-        // 【修改】並行獲取所有需要的資料來源
-        const [allContacts, allCompanies, allPotentialContacts] = await Promise.all([
-            this.getContactList(),
-            this.getCompanyList(), // 依賴 CompanyReader
-            this.getContacts(9999)    // 獲取原始名片資料(現在是未過濾的)
-        ]);
-
+        // 步驟 3: 建立輔助用的 Map
+        // Map 1: 公司ID -> 公司名稱
         const companyNameMap = new Map(allCompanies.map(c => [c.companyId, c.companyName]));
-        // 建立一個 rowIndex 到名片資料的映射表，以提升查找效率
-        const potentialContactsMap = new Map(allPotentialContacts.map(pc => [pc.rowIndex, pc]));
+        
+        // --- 【*** 關鍵修改：建立可靠的 JOIN Map ***】 ---
+        // Map 2: 建立一個從「原始名片資料」來的 Map
+        // 索引鍵 (Key) = "標準化姓名|標準化公司名稱"
+        // 值 (Value) = driveLink
+        const potentialCardMap = new Map();
+        allPotentialContacts.forEach(pc => {
+            // 必須同時有姓名、公司和連結才建立索引
+            if (pc.name && pc.company && pc.driveLink) {
+                // 使用標準化 Key 來確保比對成功率
+                const key = this._normalizeKey(pc.name) + '|' + this._normalizeKey(pc.company);
+                // 僅儲存找到的第一筆 (避免同名同公司的人有多張名片)
+                if (!potentialCardMap.has(key)) {
+                    potentialCardMap.set(key, pc.driveLink);
+                }
+            }
+        });
+        // --- 【*** 修改結束 ***】 ---
 
+
+        // 步驟 4: 組合最終結果
         const linkedContacts = allContacts
             .filter(contact => linkedContactIds.has(contact.contactId))
             .map(contact => {
-                let driveLink = '';
-                // 如果聯絡人來源是名片 (BC-xxx)
-                if (contact.sourceId && contact.sourceId.startsWith('BC-')) {
-                    const rowIndex = parseInt(contact.sourceId.replace('BC-', ''), 10);
-                    // 【*** 關鍵修正 ***】
-                    // 即使 `potentialContact` 沒有 name 或 company，
-                    // `potentialContactsMap` 現在也包含它了
-                    const potentialContact = potentialContactsMap.get(rowIndex);
-                    if (potentialContact) {
-                        driveLink = potentialContact.driveLink; // 找到對應的名片連結
-                    }
+                let driveLink = ''; // 預設為空
+                const companyName = companyNameMap.get(contact.companyId) || '';
+
+                // --- 【*** 關鍵修改：使用可靠的 Key 查找 Link ***】 ---
+                // 不再使用 contact.sourceId 和 rowIndex
+                // 改用「聯絡人總表」的姓名 + 查到的公司名稱 當作 Key
+                if (contact.name && companyName) {
+                    const key = this._normalizeKey(contact.name) + '|' + this._normalizeKey(companyName);
+                    // 從我們建立的 Map 中安全地取出 driveLink
+                    driveLink = potentialCardMap.get(key) || ''; 
                 }
+                // --- 【*** 修改結束 ***】 ---
 
                 // 回傳包含 driveLink 的完整物件
                 return {
                     contactId: contact.contactId,
-                    sourceId: contact.sourceId,
+                    sourceId: contact.sourceId, // 仍然回傳 sourceId，前端可能用它來顯示 (手動建立)
                     name: contact.name,
                     companyId: contact.companyId,
                     department: contact.department,
@@ -163,7 +193,7 @@ class ContactReader extends BaseReader {
                     phone: contact.phone,
                     email: contact.email,
                     companyName: companyNameMap.get(contact.companyId) || contact.companyId,
-                    driveLink: driveLink // 新增此欄位
+                    driveLink: driveLink // 這裡是透過可靠 JOIN 取得的連結
                 };
             });
         
